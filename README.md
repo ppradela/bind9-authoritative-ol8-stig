@@ -119,18 +119,21 @@ Oracle Linux 8 is assumed to be **DISA STIG hardened at install time** using the
 
 ### Install BIND 9.16 from Oracle Linux 8 AppStream
 
+OL8 ships two parallel-installable BIND packages. The default `bind` package is BIND 9.11, which is outdated. Install `bind9.16` instead — same service name (`named.service`), same config path (`/etc/named.conf`), but the modern 9.16 codebase (including `dnssec-policy`).
+
 ```bash
-# OL8 ships BIND 9.16 via the 'bind' module — select that stream
-dnf module reset  bind
-dnf module enable bind:9.16
-dnf install bind bind-utils
+# Make sure the legacy 9.11 package is not also installed (the two conflict).
+dnf remove bind 2>/dev/null || true
+
+# Install BIND 9.16 and matching utilities
+dnf install bind9.16 bind9.16-utils
 
 # Verify the version
 named -v
 # Expected: BIND 9.16.x (...)
 ```
 
-> The default OL8 stream may pin a different BIND version. The commands above force the 9.16 stream. If you see `9.11.x`, repeat the `dnf module enable bind:9.16` step.
+> The package is literally named `bind9.16` — there is no module stream to enable. If you previously ran `dnf module enable bind:9.16` you will see `missing groups or modules: bind:9.16`; ignore it and use the plain `dnf install bind9.16` command above.
 
 ### Verify the service account
 

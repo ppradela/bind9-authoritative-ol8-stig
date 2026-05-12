@@ -117,20 +117,20 @@ Oracle Linux 8 is assumed to be **DISA STIG hardened at install time** using the
 
 ### Stage packages on the internet-connected machine
 
+OL8 ships two parallel-installable BIND packages. The default `bind` package is BIND 9.11, which is outdated. The `bind9.16` package provides the modern 9.16 codebase (including `dnssec-policy`) with the same service name (`named.service`) and config path (`/etc/named.conf`).
+
+> The package is literally named `bind9.16` — there is no module stream. `dnf module enable bind:9.16` returns `missing groups or modules: bind:9.16` on OL8; use the plain `dnf install`/`dnf download` commands below.
+
 Run the following on the **staging machine** (must be running Oracle Linux 8):
 
 ```bash
-# Enable the BIND 9.16 module stream on the staging machine
-dnf module reset  bind
-dnf module enable bind:9.16
-
 # Create a staging directory
 mkdir -p ~/bind9-stage
 
-# Download BIND server, utilities, and all dependencies
-dnf download --resolve --destdir ~/bind9-stage bind bind-utils
+# Download bind9.16 server, utilities, and all dependencies
+dnf download --resolve --destdir ~/bind9-stage bind9.16 bind9.16-utils
 
-# Verify what was downloaded
+# Verify what was downloaded — expect bind9.16-*, bind9.16-libs-*, bind9.16-utils-*, etc.
 ls ~/bind9-stage/
 ```
 
@@ -147,12 +147,16 @@ Transfer `~/bind9-stage/` to **every** air-gapped DNS host (primary + each secon
 On each **air-gapped target host**, from the transferred staging directory:
 
 ```bash
+# bind9.16 conflicts with the legacy 9.11 'bind' package — remove it first
+dnf remove bind 2>/dev/null || true
+
 dnf install --disablerepo='*' ~/bind9-stage/*.rpm
 ```
 
 If `dnf` is unavailable or repos are fully disabled, use `rpm` directly:
 
 ```bash
+rpm -e bind 2>/dev/null || true
 rpm -ivh ~/bind9-stage/*.rpm
 ```
 
