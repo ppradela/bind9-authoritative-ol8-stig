@@ -154,17 +154,23 @@ passwd -S named    # must show: named L ...
 ```bash
 install -d -o root  -g named -m 0750 /etc/named
 install -d -o root  -g named -m 0750 /etc/named/keys
-install -d -o root  -g named -m 0750 /var/log/named
+
+# /var/log/named must be owned by 'named' — the daemon creates xfer.log,
+# dnssec.log, security.log, etc. inside it. Owning it root:named with mode
+# 0750 makes 'named' use group permissions (r-x) and the daemon fails with
+# "isc_stdio_open '/var/log/named/dnssec.log' failed: permission denied".
+install -d -o named -g named -m 0750 /var/log/named
+
 install -d -o named -g named -m 0750 /var/named/data
 install -d -o named -g named -m 0750 /var/named/dynamic
 install -d -o named -g named -m 0750 /var/named/slaves   # secondaries only
 ```
 
-**SELinux file contexts:** the stock policy already covers these paths. If you choose a non-default log directory, restore contexts before starting the service:
+**SELinux file contexts** — the bind9.16 package's policy covers `/var/named/*` but does not pre-declare `/var/log/named`. Add the type and relabel before starting the service:
 
 ```bash
-semanage fcontext -a -t named_log_t  "/var/log/named(/.*)?"
-restorecon -Rv /var/log/named
+semanage fcontext -a -t named_log_t "/var/log/named(/.*)?"
+restorecon -Rv /var/log/named /var/named
 ```
 
 ### Step 2 — Generate the TSIG zone-transfer key (once, on any host)
@@ -217,10 +223,21 @@ Edit `/etc/named/acl.conf` and replace:
 On the **primary**:
 
 ```bash
-install -o root -g named -m 0640 config/named-primary.conf    /etc/named.conf
-install -o root -g named -m 0640 config/zones-primary.conf    /etc/named/zones-primary.conf
+install -o root  -g named -m 0640 config/named-primary.conf    /etc/named.conf
+install -o root  -g named -m 0640 config/zones-primary.conf    /etc/named/zones-primary.conf
+
+# /var/named is shipped by the bind9.16 package as mode 1770 root:named
+# (sticky bit + group rwx), so 'named' group members have full write access
+# there — inline-signing can create the .jnl, .jbk, and .signed files next
+# to the master file. No need for a writable subdirectory.
 install -o named -g named -m 0640 config/zones/db.example.nation /var/named/db.example.nation
-install -o named -g named -m 0640 config/zones/db.192.0.2     /var/named/db.192.0.2
+install -o named -g named -m 0640 config/zones/db.192.0.2        /var/named/db.192.0.2
+
+# Restore SELinux labels — files copied from a non-/var/named source path
+# (e.g., your home directory) carry the source context (default_t or
+# user_home_t) instead of named_zone_t and named will fail to load the
+# zones despite correct Unix ownership.
+restorecon -Rv /var/named
 ```
 
 On **each secondary**:
@@ -529,6 +546,10 @@ If the firewall path between primary and secondary requires a specific source IP
 
 `allow-query { trusted_query; };` blocks normal queries from everything outside the management ACL. The `transfer_peers` clause is checked only on the AXFR/IXFR path — so a secondary that runs `dig @primary example.nation.` gets `REFUSED` unless its IP is also in `trusted_query`. The supplied ACL includes the secondaries' IPs there for operational reasons.
 
+### `restorecon -Rv /var/named` is mandatory after `install`
+
+Files copied into `/var/named/` from a non-`/var/named` source path (your home directory, a checked-out repo, an approved-media drop) inherit the *source* SELinux context — typically `default_t` or `user_home_t` — instead of `named_zone_t`. `named_t` cannot read those, and named fails to load the zone with `permission denied` on the master file. Run `restorecon -Rv /var/named` after every `install` into that tree. The OL8 bind9.16 SELinux module already permits `named_t` to write to `named_zone_t` for inline-signing artifacts (`.jnl`, `.jbk`, `.signed`, `.signed.jnl`), so all of those end up correctly labelled too.
+
 ### `inline-signing yes` + manual edits to `db.example.nation`
 
 When `inline-signing yes` is active, named maintains the signed copy in `db.example.nation.signed` and a journal in `db.example.nation.jnl`. Editing `db.example.nation` directly is fine **as long as you bump the SOA serial and run `rndc reload`** — never edit the `.signed` file, and never delete the `.jnl` while named is running.
@@ -544,6 +565,15 @@ A delegation referral that does not fit in 512 octets forces non-EDNS clients to
 ```bash
 dig +noall +answer +authority +additional example.nation. NS | wc -c
 ```
+
+### `CapabilityBoundingSet` bounds **root**, not just the post-drop user
+
+The EL stock `named.service` does **not** set `User=named` — named starts as root, binds port 53, then calls `setuid(named)` itself via the `-u named` flag. `CapabilityBoundingSet=` is the *upper bound on capabilities for the entire service lifetime*, including the root startup phase. Restricting it to just `CAP_NET_BIND_SERVICE` strips:
+
+- `CAP_DAC_READ_SEARCH` — root can no longer bypass DAC to read files it doesn't own. The zone files (`named:named` mode `0640`) become unreadable by root, and `ExecStartPre=/usr/sbin/named-checkconf -z` fails with `loading from master file … failed: permission denied`. **No SELinux AVC** is logged — the denial happens at the DAC layer before the LSM is consulted.
+- `CAP_SETUID` / `CAP_SETGID` — root can no longer drop to user `named`, so `named -u named` would fail too (you see the DAC error first only because ExecStartPre runs before ExecStart).
+
+The supplied drop-in therefore keeps four caps in the bounding set: `CAP_NET_BIND_SERVICE`, `CAP_SETUID`, `CAP_SETGID`, `CAP_DAC_READ_SEARCH`. Only `CAP_NET_BIND_SERVICE` is in `AmbientCapabilities=`, so after the `setuid(named)` only that one survives — the running daemon has user-level permissions plus the ability to bind privileged ports, nothing more.
 
 ### `named.service.d/hardening.conf` — OL8 (systemd 239) constraints
 
