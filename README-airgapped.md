@@ -148,7 +148,7 @@ On each **air-gapped target host**, from the transferred staging directory:
 
 ```bash
 # bind9.16 conflicts with the legacy 9.11 'bind' package — remove it first
-dnf remove bind 2>/dev/null || true
+dnf remove bind bind-utils 2>/dev/null || true
 
 dnf install --disablerepo='*' ~/bind9-stage/*.rpm
 ```
