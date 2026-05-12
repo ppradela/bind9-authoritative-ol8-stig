@@ -572,6 +572,23 @@ A delegation referral that does not fit in 512 octets forces non-EDNS clients to
 dig +noall +answer +authority +additional example.com. NS | wc -c
 ```
 
+### Boot ordering: `network.target` is not enough — wait for `network-online.target`
+
+The stock `named.service` has `After=network.target`. That only signals the network *stack* is up; it does **not** wait for interfaces to have IPs assigned. At boot, NetworkManager configures interfaces asynchronously, so named can race ahead and try to bind to the configured `listen-on` / `query-source address` before the IP exists. Symptom in the journal:
+
+```
+named[…]: could not get query source dispatcher (10.100.100.3#0)
+named[…]: loading configuration: address not available
+named[…]: exiting (due to fatal error)
+```
+
+The supplied drop-in adds a `[Unit]` section with `Wants=network-online.target` and `After=network-online.target`. That target is brought up by `NetworkManager-wait-online.service`, which blocks until every configured interface either has its address or times out. Make sure that service is enabled:
+
+```bash
+systemctl enable --now NetworkManager-wait-online.service
+systemctl is-enabled NetworkManager-wait-online.service   # → enabled
+```
+
 ### `CapabilityBoundingSet` bounds **root**, not just the post-drop user
 
 The EL stock `named.service` does **not** set `User=named` — named starts as root, binds port 53, then calls `setuid(named)` itself via the `-u named` flag. `CapabilityBoundingSet=` is the *upper bound on capabilities for the entire service lifetime*, including the root startup phase. Restricting it to just `CAP_NET_BIND_SERVICE` strips:
