@@ -82,8 +82,7 @@ repository/
 │       └── db.192.0.2            # Example reverse zone (/24, 8-bit boundary)
 ├── scripts/
 │   ├── new-tsig-key.sh           # TSIG key generator (Bash)
-│   ├── new-tsig-key.py           # TSIG key generator (Python 3.6+)
-│   └── New-TsigKey.ps1           # TSIG key generator (PowerShell)
+│   └── new-tsig-key.py           # TSIG key generator (Python 3.6+)
 ├── README.md                     # Internet-connected deployment guide
 └── README-airgapped.md           # This guide (air-gapped deployment)
 ```
@@ -207,11 +206,8 @@ Generate **once** on the staging machine; transfer the resulting file to every s
 # Bash
 ./scripts/new-tsig-key.sh -n zone-transfer-key -a hmac-sha384 -o tsig.key
 
-# Python
+# Python (any host with Python 3.6+)
 python3 scripts/new-tsig-key.py -n zone-transfer-key -a hmac-sha384 -o tsig.key
-
-# PowerShell
-.\scripts\New-TsigKey.ps1 -Name zone-transfer-key -Algorithm hmac-sha384 -OutFile tsig.key
 ```
 
 Transfer `tsig.key` to every server via approved media, then install identically:
