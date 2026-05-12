@@ -78,7 +78,7 @@ repository/
 │   ├── named-hardening.conf      # systemd hardening drop-in
 │   ├── rsyslog-named.conf        # rsyslog SIEM forwarding rule
 │   └── zones/
-│       ├── db.example.nation     # Example forward zone (.nation TLD)
+│       ├── db.example.com     # Example forward zone (substitute your apex)
 │       └── db.192.0.2            # Example reverse zone (/24, 8-bit boundary)
 ├── scripts/
 │   ├── new-tsig-key.sh           # TSIG key generator (Bash)
@@ -96,7 +96,7 @@ repository/
 | `config/tsig.key.example` → regenerated to `tsig.key` | `/etc/named/keys/tsig.key` |
 | `config/zones-primary.conf` *(primary host only)* | `/etc/named/zones-primary.conf` |
 | `config/zones-secondary.conf` *(secondary hosts only)* | `/etc/named/zones-secondary.conf` |
-| `config/zones/db.example.nation` *(primary host only)* | `/var/named/db.example.nation` |
+| `config/zones/db.example.com` *(primary host only)* | `/var/named/db.example.com` |
 | `config/zones/db.192.0.2` *(primary host only)* | `/var/named/db.192.0.2` |
 | `config/named-hardening.conf` | `/etc/systemd/system/named.service.d/hardening.conf` |
 | `config/rsyslog-named.conf` | `/etc/rsyslog.d/named.conf` |
@@ -256,7 +256,7 @@ install -o root  -g named -m 0640 config/zones-primary.conf    /etc/named/zones-
 # (sticky bit + group rwx), so 'named' group members have full write access
 # there — inline-signing can create the .jnl, .jbk, and .signed files next
 # to the master file. No need for a writable subdirectory.
-install -o named -g named -m 0640 config/zones/db.example.nation /var/named/db.example.nation
+install -o named -g named -m 0640 config/zones/db.example.com /var/named/db.example.com
 install -o named -g named -m 0640 config/zones/db.192.0.2        /var/named/db.192.0.2
 
 # Restore SELinux labels — files transferred from approved media carry
@@ -280,7 +280,49 @@ Validate before starting:
 named-checkconf -z /etc/named.conf
 ```
 
-> **Air-gapped note:** for the enclave's own `.nation` (or other) TLD, the secondaries are the apex authority — there is no parent registry outside the enclave. The DS records produced in Step 11 below must be loaded as static trust anchors on every enclave recursive resolver, not submitted to a public registry.
+> **Air-gapped note:** for the enclave's own TLD (`.nation` or any other), the secondaries are the apex authority — there is no parent registry outside the enclave. The DS records produced in Step 11 below must be loaded as static trust anchors on every enclave recursive resolver, not submitted to a public registry.
+
+#### Step 7a — (Optional) Deploy unsigned first, sign later
+
+DNSSEC is **opt-in per zone**. The shipped `zones-primary.conf` enables it on every zone via:
+
+```text
+dnssec-policy  "stig-default";
+inline-signing yes;
+```
+
+For initial bring-up — especially in an air-gapped enclave where you need to coordinate trust-anchor distribution with every recursive resolver — it is usually cleaner to validate the basic topology (TSIG-protected AXFR, NOTIFY, SOA propagation, NS RRset parity) **before** layering DNSSEC on top. Two equivalent ways to do that per zone:
+
+| | Edit in `zones-primary.conf` |
+|---|---|
+| **Option A — comment out** | `# dnssec-policy "stig-default";`<br>`# inline-signing yes;` |
+| **Option B — explicit unsigned policy** | `dnssec-policy "insecure";`<br>*(omit `inline-signing`)* |
+
+Option B is the BIND-9.16 idiomatic way to mark a zone deliberately unsigned — named will not generate keys and `rndc dnssec -status` reports the zone as insecure rather than missing.
+
+After editing:
+
+```bash
+named-checkconf -z /etc/named.conf
+systemctl restart named         # first start
+# OR, on a running server:
+rndc reload <zone>
+```
+
+Verify the zone serves unsigned:
+
+```bash
+dig @192.0.2.10 example.com. SOA +dnssec | grep -E 'flags|ad|RRSIG'
+# Expected: no RRSIG records, no 'ad' flag in flags line
+```
+
+**Enabling DNSSEC later** — once the unsigned topology is healthy:
+
+1. Edit `/etc/named/zones-primary.conf` and re-enable signing for each zone (Option B back to `dnssec-policy "stig-default"; inline-signing yes;`).
+2. `rndc reload <zone>` — named generates KSK + ZSK under `/var/named/` within seconds.
+3. Continue from **Step 11** (DNSSEC bootstrap and trust-anchor distribution) below.
+
+The secondaries need **no configuration change** — they pull whatever the primary serves (unsigned today, signed tomorrow). Trust-anchor distribution to enclave resolvers is required only once you enable signing.
 
 ### Step 8 — Install the systemd hardening drop-in
 
@@ -336,18 +378,18 @@ With `dnssec-policy "stig-default"` active and `inline-signing yes`, named gener
 
 ```bash
 ls -la /var/named/keys/
-rndc dnssec -status example.nation
+rndc dnssec -status example.com
 ```
 
 Extract the DS record from the KSK:
 
 ```bash
-dnssec-dsfromkey -2 /var/named/keys/Kexample.nation.+013+*.key
+dnssec-dsfromkey -2 /var/named/keys/Kexample.com.+013+*.key
 ```
 
 Distribute the resulting **DS RR** (key tag, algorithm, digest type 2 = SHA-256, digest) to every recursive resolver in the enclave as a static trust anchor. On enclaves where the recursive resolvers are built from the companion [pdns-recursor-ol8-stig](https://github.com/ppradela/pdns-recursor-ol8-stig) repository, add one `addTA()` line per signed zone to `/etc/pdns-recursor/recursor.lua` on each resolver.
 
-> **KSK private key — offline custody:** the KSK private file (`Kexample.nation.+013+<keytag>.private`) should be moved to offline media after first signing converges. Restore it under `/var/named/keys/` only during scheduled rollover windows (typical KSK lifetime ~5 years), then re-archive. The ZSK private key remains on-host for automated re-signing (typical ZSK lifetime ~1 year, ~1 month overlap during roll).
+> **KSK private key — offline custody:** the KSK private file (`Kexample.com.+013+<keytag>.private`) should be moved to offline media after first signing converges. Restore it under `/var/named/keys/` only during scheduled rollover windows (typical KSK lifetime ~5 years), then re-archive. The ZSK private key remains on-host for automated re-signing (typical ZSK lifetime ~1 year, ~1 month overlap during roll).
 
 ### Step 12 — Configure firewalld
 
@@ -388,23 +430,23 @@ firewall-cmd --reload
 # Primary
 systemctl status named
 dig @192.0.2.10 +norec www.iana.org. A | grep status            # REFUSED
-dig @192.0.2.10 example.nation. SOA | grep -E 'flags|status'    # status NOERROR, aa flag
-dig @192.0.2.10 example.nation. NS +short
+dig @192.0.2.10 example.com. SOA | grep -E 'flags|status'    # status NOERROR, aa flag
+dig @192.0.2.10 example.com. NS +short
 dig @192.0.2.10 -x 192.0.2.20 +short
-dig @192.0.2.10 example.nation. DNSKEY +dnssec | grep -E 'DNSKEY|RRSIG'
-dig @192.0.2.10 example.nation. NS +noall +answer +authority +additional +nostats | wc -c   # < 512
+dig @192.0.2.10 example.com. DNSKEY +dnssec | grep -E 'DNSKEY|RRSIG'
+dig @192.0.2.10 example.com. NS +noall +answer +authority +additional +nostats | wc -c   # < 512
 
 # Each secondary
-named-checkzone example.nation /var/named/slaves/db.example.nation
+named-checkzone example.com /var/named/slaves/db.example.com
 for ns in 192.0.2.10 192.0.2.20 192.0.2.21; do
   echo "=== $ns ==="
-  dig @$ns example.nation. SOA +short
-  dig @$ns example.nation. NS +short | sort
+  dig @$ns example.com. SOA +short
+  dig @$ns example.com. NS +short | sort
 done
 # Expected: identical SOA serial AND identical, sorted NS RRset on all three
 
 # Zone-transfer ACL — must refuse without TSIG
-dig @192.0.2.10 example.nation. AXFR | head -5         # "Transfer failed."
+dig @192.0.2.10 example.com. AXFR | head -5         # "Transfer failed."
 
 # Logs and SIEM
 ls -l /var/log/named/
@@ -420,13 +462,13 @@ journalctl -u rsyslog --no-pager | tail -5
 
 ```bash
 # 1. Edit and bump the SOA serial
-vi /var/named/db.example.nation
+vi /var/named/db.example.com
 
 # 2. Syntax + SOA + glue validation
-named-checkzone example.nation /var/named/db.example.nation
+named-checkzone example.com /var/named/db.example.com
 
 # 3. Reload — re-signs (DNSSEC) and triggers NOTIFY automatically
-rndc reload example.nation
+rndc reload example.com
 journalctl -u named --no-pager | tail -20
 ```
 
@@ -439,18 +481,18 @@ journalctl -u named --no-pager | tail -20
 ```bash
 # Stage the KSK private from offline media:
 install -o named -g named -m 0600 \
-  /media/offline/Kexample.nation.+013+<keytag>.private \
-  /var/named/keys/Kexample.nation.+013+<keytag>.private
+  /media/offline/Kexample.com.+013+<keytag>.private \
+  /var/named/keys/Kexample.com.+013+<keytag>.private
 
 # Force the rollover
-rndc dnssec -rollover -key <keytag> example.nation
+rndc dnssec -rollover -key <keytag> example.com
 
 # Watch progression
-watch -n10 'rndc dnssec -status example.nation'
+watch -n10 'rndc dnssec -status example.com'
 
 # After the new DS record has been published to every enclave resolver
 # AND the old KSK is fully retired, sanitise the on-host private file
-shred -u /var/named/keys/Kexample.nation.+013+<oldkeytag>.private
+shred -u /var/named/keys/Kexample.com.+013+<oldkeytag>.private
 ```
 
 Re-archive the new KSK private to offline media; do **not** leave the private file on-host outside an active rollover window.
@@ -527,7 +569,7 @@ If the host has multiple addresses, BIND will (by default) source outbound queri
 A delegation referral that does not fit in 512 octets forces non-EDNS clients to retry over TCP. Keep the NS RRset small (two records is correct), and ensure glue A records match the authoritative A records. Verify with:
 
 ```bash
-dig +noall +answer +authority +additional example.nation. NS | wc -c
+dig +noall +answer +authority +additional example.com. NS | wc -c
 ```
 
 ### `CapabilityBoundingSet` bounds **root**, not just the post-drop user

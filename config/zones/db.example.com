@@ -1,16 +1,18 @@
 ; ============================================================================
-; /var/named/db.example.nation
+; /var/named/db.example.com
 ;
-; Forward zone — example.nation (country-code TLD demonstration)
+; Forward zone — example.com (illustrative apex; substitute your real
+; domain, including country-code TLDs such as .nation, when adapting for
+; production)
 ; Two independent name servers for the delegated zone:
-;     ns1.example.nation  → 192.0.2.20  (secondary-1)
-;     ns2.example.nation  → 192.0.2.21  (secondary-2)
+;     ns1.example.com  → 192.0.2.20  (secondary-1)
+;     ns2.example.com  → 192.0.2.21  (secondary-2)
 ;
 ; Notes
 ;   - The NS RRset returned to clients matches the delegation expected in the
-;     parent (.nation) zone, and the A glue records match the authoritative
-;     A records here — there is no glue/authoritative mismatch.
-;   - The referral payload for example.nation (SOA omitted, NS set + 1 glue A)
+;     parent zone, and the A glue records match the authoritative A records
+;     here — there is no glue/authoritative mismatch.
+;   - The referral payload for example.com (SOA omitted, NS set + 1 glue A)
 ;     fits comfortably within 512 octets, satisfying the non-EDNS UDP limit.
 ;   - The SOA timers are tuned for federated / austere operation: short
 ;     refresh (1 h) so a change propagates promptly when the link is up, with
@@ -22,9 +24,9 @@
 ; ============================================================================
 
 $TTL 3600
-$ORIGIN example.nation.
+$ORIGIN example.com.
 
-@   IN  SOA   ns1.example.nation. hostmaster.example.nation. (
+@   IN  SOA   ns1.example.com. hostmaster.example.com. (
               2026031101    ; serial    — YYYYMMDDNN, bump on every edit
               3600          ; refresh   — secondaries probe SOA every 1 h
               900           ; retry     — retry every 15 min on failure
@@ -33,8 +35,8 @@ $ORIGIN example.nation.
               )
 
 ; ---- Authoritative name servers (NS RRset) -------------------------------
-@   IN  NS    ns1.example.nation.
-@   IN  NS    ns2.example.nation.
+@   IN  NS    ns1.example.com.
+@   IN  NS    ns2.example.com.
 
 ; ---- Glue A records — MUST match the authoritative A records below -------
 ns1 IN  A     192.0.2.20
@@ -42,7 +44,7 @@ ns2 IN  A     192.0.2.21
 
 ; ---- Apex address & mail -------------------------------------------------
 @         IN  A     192.0.2.30
-@         IN  MX 10 mail.example.nation.
+@         IN  MX 10 mail.example.com.
 mail      IN  A     192.0.2.31
 
 ; ---- Hosts ---------------------------------------------------------------
@@ -51,8 +53,8 @@ ldap      IN  A     192.0.2.32
 ntp       IN  A     192.0.2.33
 
 ; ---- SRV (RFC 2782) demonstration ----------------------------------------
-_ldap._tcp        IN  SRV 0 5 389  ldap.example.nation.
-_ntp._udp         IN  SRV 0 5 123  ntp.example.nation.
+_ldap._tcp        IN  SRV 0 5 389  ldap.example.com.
+_ntp._udp         IN  SRV 0 5 123  ntp.example.com.
 
 ; ============================================================================
 ; END

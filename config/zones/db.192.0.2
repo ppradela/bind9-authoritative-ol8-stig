@@ -4,19 +4,19 @@
 ; Reverse zone — 2.0.192.in-addr.arpa  (covers 192.0.2.0/24, a full 8-bit
 ; boundary; delegation on full octet boundaries supported).
 ;
-; PTR records match the corresponding A records in db.example.nation:
-;     192.0.2.20  ← ns1.example.nation
-;     192.0.2.21  ← ns2.example.nation
-;     192.0.2.30  ← www.example.nation / example.nation apex
-;     192.0.2.31  ← mail.example.nation
-;     192.0.2.32  ← ldap.example.nation
-;     192.0.2.33  ← ntp.example.nation
+; PTR records match the corresponding A records in db.example.com:
+;     192.0.2.20  ← ns1.example.com
+;     192.0.2.21  ← ns2.example.com
+;     192.0.2.30  ← www.example.com / example.com apex
+;     192.0.2.31  ← mail.example.com
+;     192.0.2.32  ← ldap.example.com
+;     192.0.2.33  ← ntp.example.com
 ; ============================================================================
 
 $TTL 3600
 $ORIGIN 2.0.192.in-addr.arpa.
 
-@   IN  SOA   ns1.example.nation. hostmaster.example.nation. (
+@   IN  SOA   ns1.example.com. hostmaster.example.com. (
               2026031101    ; serial    — bump on every edit
               3600          ; refresh
               900           ; retry
@@ -24,15 +24,15 @@ $ORIGIN 2.0.192.in-addr.arpa.
               3600          ; minimum
               )
 
-@   IN  NS    ns1.example.nation.
-@   IN  NS    ns2.example.nation.
+@   IN  NS    ns1.example.com.
+@   IN  NS    ns2.example.com.
 
-20  IN  PTR   ns1.example.nation.
-21  IN  PTR   ns2.example.nation.
-30  IN  PTR   www.example.nation.
-31  IN  PTR   mail.example.nation.
-32  IN  PTR   ldap.example.nation.
-33  IN  PTR   ntp.example.nation.
+20  IN  PTR   ns1.example.com.
+21  IN  PTR   ns2.example.com.
+30  IN  PTR   www.example.com.
+31  IN  PTR   mail.example.com.
+32  IN  PTR   ldap.example.com.
+33  IN  PTR   ntp.example.com.
 
 ; ============================================================================
 ; END

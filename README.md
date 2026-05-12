@@ -20,7 +20,7 @@
 - **Unicast source addressing** — `query-source`, `notify-source`, `transfer-source` all pinned to a single unicast IP; no anycast on the outbound path
 - **DNSSEC via dnssec-policy** — automated KSK/ZSK rollover, automatic re-signing on zone modification, signature expiry, and key boundary events. Algorithm set restricted to RSASHA256, RSASHA512, ECDSAP256SHA256, ECDSAP384SHA384
 - **Federated-tolerant SOA timers** — short refresh (1 h) for fast propagation; long expire (60 d) so a disconnected secondary remains usable for two months
-- **Country-code TLD support (.nation)** — example zone demonstrates `example.nation` as a `cc` TLD with matching reverse zone on a full /24 (8-bit) boundary
+- **Country-code TLD support** — example zone (`example.com`) demonstrates an arbitrary TLD apex (substitute `.nation` or another cc-TLD as needed) with matching reverse zone on a full /24 (8-bit) boundary
 - **Referral payload ≤ 512 octets** — minimal-responses, conservative NS RRset, glue A records matching the authoritative A records
 - **Structured logging** — separate channels for zone transfers, NOTIFY, dynamic updates, DNSSEC events, security denials, query errors; all categories forwarded to a SIEM via rsyslog (facility `local5`)
 - **systemd hardening drop-in** — capabilities reduced to `CAP_NET_BIND_SERVICE`, core dumps disabled, ReadWritePaths pinned to actual zone/log paths; OL8/systemd-239 compatible
@@ -81,7 +81,7 @@ repository/
 │   ├── named-hardening.conf      # systemd hardening drop-in
 │   ├── rsyslog-named.conf        # rsyslog SIEM forwarding rule
 │   └── zones/
-│       ├── db.example.nation     # Example forward zone (.nation TLD)
+│       ├── db.example.com     # Example forward zone (substitute your apex)
 │       └── db.192.0.2            # Example reverse zone (/24, 8-bit boundary)
 ├── scripts/
 │   ├── new-tsig-key.sh           # TSIG key generator (Bash)
@@ -99,7 +99,7 @@ repository/
 | `config/tsig.key.example` → regenerated to `tsig.key` | `/etc/named/keys/tsig.key` |
 | `config/zones-primary.conf` *(primary host only)* | `/etc/named/zones-primary.conf` |
 | `config/zones-secondary.conf` *(secondary hosts only)* | `/etc/named/zones-secondary.conf` |
-| `config/zones/db.example.nation` *(primary host only)* | `/var/named/db.example.nation` |
+| `config/zones/db.example.com` *(primary host only)* | `/var/named/db.example.com` |
 | `config/zones/db.192.0.2` *(primary host only)* | `/var/named/db.192.0.2` |
 | `config/named-hardening.conf` | `/etc/systemd/system/named.service.d/hardening.conf` |
 | `config/rsyslog-named.conf` | `/etc/rsyslog.d/named.conf` |
@@ -230,7 +230,7 @@ install -o root  -g named -m 0640 config/zones-primary.conf    /etc/named/zones-
 # (sticky bit + group rwx), so 'named' group members have full write access
 # there — inline-signing can create the .jnl, .jbk, and .signed files next
 # to the master file. No need for a writable subdirectory.
-install -o named -g named -m 0640 config/zones/db.example.nation /var/named/db.example.nation
+install -o named -g named -m 0640 config/zones/db.example.com /var/named/db.example.com
 install -o named -g named -m 0640 config/zones/db.192.0.2        /var/named/db.192.0.2
 
 # Restore SELinux labels — files copied from a non-/var/named source path
@@ -266,6 +266,48 @@ named-checkconf -z /etc/named.conf
 ```
 
 `-z` walks every zone — it catches not just syntax errors but also bad SOA timers, missing glue, and signing-policy mismatches.
+
+#### Step 5a — (Optional) Deploy unsigned first, sign later
+
+DNSSEC is **opt-in per zone**. The shipped `zones-primary.conf` enables it on every zone via:
+
+```text
+dnssec-policy  "stig-default";
+inline-signing yes;
+```
+
+For an initial bring-up it is usually cleaner to validate the basic topology (TSIG-protected AXFR, NOTIFY, SOA propagation, NS RRset parity across primary + every secondary) **before** layering DNSSEC on top. Two equivalent ways to do that per zone:
+
+| | Edit in `zones-primary.conf` |
+|---|---|
+| **Option A — comment out** | `# dnssec-policy "stig-default";`<br>`# inline-signing yes;` |
+| **Option B — explicit unsigned policy** | `dnssec-policy "insecure";`<br>*(omit `inline-signing`)* |
+
+Option B is the BIND-9.16 idiomatic way to mark a zone deliberately unsigned — named will not generate keys and `rndc dnssec -status` reports the zone as insecure rather than missing.
+
+After editing:
+
+```bash
+named-checkconf -z /etc/named.conf
+systemctl restart named         # first start
+# OR, on a running server:
+rndc reload <zone>
+```
+
+Verify the zone serves unsigned:
+
+```bash
+dig @192.0.2.10 example.com. SOA +dnssec | grep -E 'flags|ad|RRSIG'
+# Expected: no RRSIG records, no 'ad' flag in flags line
+```
+
+**Enabling DNSSEC later** — once the unsigned topology is healthy:
+
+1. Edit `/etc/named/zones-primary.conf` and re-enable signing for each zone (Option B back to `dnssec-policy "stig-default"; inline-signing yes;`).
+2. `rndc reload <zone>` — named generates KSK + ZSK under `/var/named/` within seconds.
+3. Continue from **Step 10** (DNSSEC bootstrap and DS submission) below.
+
+The secondaries need **no configuration change** — they pull whatever the primary serves (unsigned today, signed tomorrow).
 
 ### Step 6 — Install the systemd hardening drop-in
 
@@ -351,19 +393,19 @@ With `dnssec-policy "stig-default"` active and `inline-signing yes`, named gener
 
 ```bash
 ls -la /var/named/keys/
-rndc dnssec -status example.nation
+rndc dnssec -status example.com
 ```
 
-Extract the DS records to submit to the parent (`.nation` registry):
+Extract the DS records to submit to the parent registry (whichever TLD or sub-delegation owns the apex — `.nation`, `.tld`, or your real cc-TLD):
 
 ```bash
-dnssec-dsfromkey -2 /var/named/keys/Kexample.nation.+013+*.key
+dnssec-dsfromkey -2 /var/named/keys/Kexample.com.+013+*.key
 ```
 
 Submit the resulting **DS RR** (key tag, algorithm, digest type 2 = SHA-256, digest) to the parent registry exactly as printed. Validation will succeed once:
 
 1. The parent has published the DS RR; and
-2. The matching DNSKEY is present in this zone (confirm with `dig @ns1.example.nation. DNSKEY example.nation. +dnssec`).
+2. The matching DNSKEY is present in this zone (confirm with `dig @ns1.example.com. DNSKEY example.com. +dnssec`).
 
 > If you need RSASHA256 instead of ECDSAP256SHA256 (for example, because the parent registry does not yet accept algorithm 13), switch the zone stanza to `dnssec-policy "stig-rsa";` before first start and re-bootstrap.
 
@@ -383,20 +425,20 @@ dig @192.0.2.10 +norec www.iana.org. A | grep status
 # Expected: status: REFUSED
 
 # 3. Authoritative answer for our own zone — must return AA flag, NOERROR
-dig @192.0.2.10 example.nation. SOA | grep -E 'flags|status'
+dig @192.0.2.10 example.com. SOA | grep -E 'flags|status'
 # Expected: status: NOERROR ; flags: qr aa ...
 
 # 4. NS RRset matches what is delegated in the parent
-dig @192.0.2.10 example.nation. NS +short
+dig @192.0.2.10 example.com. NS +short
 
 # 5. Reverse zone responds with matching PTR
 dig @192.0.2.10 -x 192.0.2.20 +short
 
 # 6. DNSSEC chain — the zone is signed; expect RRSIG and DNSKEY responses
-dig @192.0.2.10 example.nation. DNSKEY +dnssec | grep -E 'DNSKEY|RRSIG'
+dig @192.0.2.10 example.com. DNSKEY +dnssec | grep -E 'DNSKEY|RRSIG'
 
 # 7. Referral payload size for a name in the zone — must be < 512 octets
-dig @192.0.2.10 example.nation. NS +noall +answer +authority +additional +nostats \
+dig @192.0.2.10 example.com. NS +noall +answer +authority +additional +nostats \
   | wc -c
 # Expected: comfortably under 512
 ```
@@ -405,17 +447,17 @@ Run on **each secondary**:
 
 ```bash
 # 8. Zone has been transferred from primary
-named-checkzone example.nation /var/named/slaves/db.example.nation
+named-checkzone example.com /var/named/slaves/db.example.com
 
 # 9. Secondary answers authoritatively for the same SOA serial as the primary
-dig @192.0.2.20 example.nation. SOA +short
-dig @192.0.2.21 example.nation. SOA +short
+dig @192.0.2.20 example.com. SOA +short
+dig @192.0.2.21 example.com. SOA +short
 # Expected: identical serial number on both, identical to primary
 
 # 10. NS RRset returned by every authority is identical
 for ns in 192.0.2.10 192.0.2.20 192.0.2.21; do
   echo "=== $ns ==="
-  dig @$ns example.nation. NS +short | sort
+  dig @$ns example.com. NS +short | sort
 done
 # Expected: identical, sorted output from all three
 
@@ -424,7 +466,7 @@ dig @192.0.2.20 +norec www.iana.org. A | grep status
 # Expected: status: REFUSED
 
 # 12. Zone-transfer ACL works — unauthenticated AXFR is refused
-dig @192.0.2.10 example.nation. AXFR | head -5
+dig @192.0.2.10 example.com. AXFR | head -5
 # Expected: "Transfer failed." (no TSIG presented)
 ```
 
@@ -449,13 +491,13 @@ journalctl -u rsyslog --no-pager | tail -5
 
 ```bash
 # 1. Edit the zone file — bump the SOA serial to YYYYMMDDNN
-vi /var/named/db.example.nation
+vi /var/named/db.example.com
 
 # 2. Validate syntax and SOA/glue consistency
-named-checkzone example.nation /var/named/db.example.nation
+named-checkzone example.com /var/named/db.example.com
 
 # 3. Reload the zone — re-signs (DNSSEC) and triggers NOTIFY automatically
-rndc reload example.nation
+rndc reload example.com
 journalctl -u named --no-pager | tail -20
 ```
 
@@ -466,13 +508,13 @@ Within seconds, secondaries should AXFR/IXFR; verify with the smoke tests above.
 Driven by `dnssec-policy` automatically. Confirm the live state:
 
 ```bash
-rndc dnssec -status example.nation
+rndc dnssec -status example.com
 ```
 
 To force a ZSK roll for testing:
 
 ```bash
-rndc dnssec -rollover -key <keytag> example.nation
+rndc dnssec -rollover -key <keytag> example.com
 ```
 
 When the KSK private key is kept **offline** (recommended): the offline copy must be available on the primary for the duration of any KSK rollover. Reinstall it under `/var/named/keys/` with mode `0600 named:named`, perform the rollover, then re-archive offline.
@@ -544,15 +586,15 @@ If the firewall path between primary and secondary requires a specific source IP
 
 ### Hidden primary still must accept queries from secondaries during diagnostics
 
-`allow-query { trusted_query; };` blocks normal queries from everything outside the management ACL. The `transfer_peers` clause is checked only on the AXFR/IXFR path — so a secondary that runs `dig @primary example.nation.` gets `REFUSED` unless its IP is also in `trusted_query`. The supplied ACL includes the secondaries' IPs there for operational reasons.
+`allow-query { trusted_query; };` blocks normal queries from everything outside the management ACL. The `transfer_peers` clause is checked only on the AXFR/IXFR path — so a secondary that runs `dig @primary example.com.` gets `REFUSED` unless its IP is also in `trusted_query`. The supplied ACL includes the secondaries' IPs there for operational reasons.
 
 ### `restorecon -Rv /var/named` is mandatory after `install`
 
 Files copied into `/var/named/` from a non-`/var/named` source path (your home directory, a checked-out repo, an approved-media drop) inherit the *source* SELinux context — typically `default_t` or `user_home_t` — instead of `named_zone_t`. `named_t` cannot read those, and named fails to load the zone with `permission denied` on the master file. Run `restorecon -Rv /var/named` after every `install` into that tree. The OL8 bind9.16 SELinux module already permits `named_t` to write to `named_zone_t` for inline-signing artifacts (`.jnl`, `.jbk`, `.signed`, `.signed.jnl`), so all of those end up correctly labelled too.
 
-### `inline-signing yes` + manual edits to `db.example.nation`
+### `inline-signing yes` + manual edits to `db.example.com`
 
-When `inline-signing yes` is active, named maintains the signed copy in `db.example.nation.signed` and a journal in `db.example.nation.jnl`. Editing `db.example.nation` directly is fine **as long as you bump the SOA serial and run `rndc reload`** — never edit the `.signed` file, and never delete the `.jnl` while named is running.
+When `inline-signing yes` is active, named maintains the signed copy in `db.example.com.signed` and a journal in `db.example.com.jnl`. Editing `db.example.com` directly is fine **as long as you bump the SOA serial and run `rndc reload`** — never edit the `.signed` file, and never delete the `.jnl` while named is running.
 
 ### `query-source address` on a multi-homed primary
 
@@ -563,7 +605,7 @@ If the host has multiple addresses, BIND will (by default) source outbound queri
 A delegation referral that does not fit in 512 octets forces non-EDNS clients to retry over TCP, breaking some legacy resolvers. Keep the NS RRset small (two records is correct), and ensure glue A records match the authoritative A records so the response is compact. Verify with:
 
 ```bash
-dig +noall +answer +authority +additional example.nation. NS | wc -c
+dig +noall +answer +authority +additional example.com. NS | wc -c
 ```
 
 ### `CapabilityBoundingSet` bounds **root**, not just the post-drop user
