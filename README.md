@@ -123,10 +123,10 @@ OL8 ships two parallel-installable BIND packages. The default `bind` package is 
 
 ```bash
 # Make sure the legacy 9.11 package is not also installed (the two conflict).
-dnf remove bind bind-utils 2>/dev/null || true
+dnf remove -y bind bind-utils 2>/dev/null || true
 
 # Install BIND 9.16 and matching utilities
-dnf install bind9.16 bind9.16-utils
+dnf install -y bind9.16 bind9.16-utils
 
 # Verify the version
 named -v
